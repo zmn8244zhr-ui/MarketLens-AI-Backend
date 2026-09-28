@@ -1,8 +1,22 @@
 const ALLOWED_INTERVALS = new Set([
-  '1min', '5min', '15min', '30min', '1h', '2h', '4h', '8h', '1day', '1week'
+  '1min',
+  '5min',
+  '15min',
+  '30min',
+  '1h',
+  '2h',
+  '4h',
+  '8h',
+  '1day',
+  '1week'
 ]);
 
-const PROVIDERS = new Set(['demo', 'twelve-data', 'generic-ohlc']);
+const PROVIDERS = new Set([
+  'demo',
+  'twelve-data',
+  'tickerlayer',
+  'generic-ohlc'
+]);
 
 function send(res, status, body) {
   res.status(status).json(body);
@@ -36,9 +50,6 @@ function demoCandles(interval, count = 80) {
     const close = Math.max(1, open + drift);
     const high = Math.max(open, close) + Math.random() * 1.8;
     const low = Math.min(open, close) - Math.random() * 1.8;
-    const volume = Math.round(
-      1000000 + Math.random() * 2500000
-    );
 
     out.push({
       datetime: t.toISOString(),
@@ -46,7 +57,7 @@ function demoCandles(interval, count = 80) {
       high: +high.toFixed(4),
       low: +low.toFixed(4),
       close: +close.toFixed(4),
-      volume
+      volume: Math.round(1000000 + Math.random() * 2500000)
     });
 
     price = close;
@@ -75,89 +86,93 @@ function providerSymbol(symbol) {
   const key = String(symbol || '').trim().toUpperCase();
 
   if (['USA100', 'US100', 'US TECH 100'].includes(key)) {
-    return process.env.USA100_PROVIDER_SYMBOL || 'USA100';
+    return 'US100';
   }
 
-  return key || process.env.MARKET_SYMBOL || 'USA100';
+  return key || 'US100';
 }
 
-async function getTwelveData(symbol, interval, outputsize) {
-  const apiKey = process.env.TWELVE_DATA_API_KEY;
+function intervalParts(interval) {
+  const map = {
+    '1min': [1, 'minute'],
+    '5min': [5, 'minute'],
+    '15min': [15, 'minute'],
+    '1h': [1, 'hour'],
+    '4h': [4, 'hour'],
+    '1day': [1, 'day']
+  };
+
+  return map[interval] || null;
+}
+
+function dateString(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+async function getTickerLayer(symbol, interval, outputsize) {
+  const apiKey = process.env.MARKET_DATA_API_KEY;
 
   if (!apiKey) {
-    throw new Error('TWELVE_DATA_API_KEY is not configured');
+    throw new Error('MARKET_DATA_API_KEY is not configured');
   }
 
-  const url = new URL(
-    'https://api.twelvedata.com/time_series'
+  const parts = intervalParts(interval);
+
+  if (!parts) {
+    throw new Error(
+      `TickerLayer does not directly support ${interval}`
+    );
+  }
+
+  const [multiplier, timespan] = parts;
+
+  const daysBack = ({
+    '1min': 3,
+    '5min': 10,
+    '15min': 30,
+    '1h': 90,
+    '4h': 365,
+    '1day': 3650
+  }[interval] || 10);
+
+  const to = new Date();
+  const from = new Date(
+    Date.now() - daysBack * 24 * 60 * 60 * 1000
   );
 
-  url.searchParams.set('symbol', symbol);
-  url.searchParams.set('interval', interval);
-  url.searchParams.set('outputsize', String(outputsize));
-  url.searchParams.set('order', 'asc');
-  url.searchParams.set('include_ohlc', 'true');
-  url.searchParams.set('timezone', 'UTC');
-  url.searchParams.set('apikey', apiKey);
+  const url =
+    `https://api.tickerlayer.com/indices/agg/${symbol}/${multiplier}/${timespan}/${dateString(from)}/${dateString(to)}` +
+    `?sort=asc&limit=5000`;
 
-  const upstream = await fetch(url);
-  const data = await upstream.json();
+  const upstream = await fetch(url, {
+    headers: {
+      'x-api-key': apiKey
+    }
+  });
 
-  if (!upstream.ok || data.status === 'error') {
-    throw new Error(
-      data.message || 'Twelve Data request failed'
-    );
-  }
-
-  return normalizeCandles(data.values || []);
-}
-
-async function getGenericOHLC(symbol, interval, outputsize) {
-  const template = process.env.MARKET_DATA_URL_TEMPLATE;
-
-  if (!template) {
-    throw new Error(
-      'MARKET_DATA_URL_TEMPLATE is not configured'
-    );
-  }
-
-  const url = template
-    .replaceAll(
-      '{symbol}',
-      encodeURIComponent(symbol)
-    )
-    .replaceAll(
-      '{interval}',
-      encodeURIComponent(interval)
-    )
-    .replaceAll(
-      '{outputsize}',
-      encodeURIComponent(String(outputsize))
-    );
-
-  const headers = {};
-
-  if (process.env.MARKET_DATA_API_KEY) {
-    headers.Authorization =
-      `Bearer ${process.env.MARKET_DATA_API_KEY}`;
-  }
-
-  const upstream = await fetch(url, { headers });
   const data = await upstream.json();
 
   if (!upstream.ok) {
     throw new Error(
       data.message ||
-      'Generic market data request failed'
+      `TickerLayer request failed (${upstream.status})`
     );
   }
 
-  return normalizeCandles(
-    data.values ||
-    data.data ||
-    data.candles ||
-    []
-  );
+  const values = (data.results || []).map(c => ({
+    datetime: new Date(c.t).toISOString(),
+    open: Number(c.o),
+    high: Number(c.h),
+    low: Number(c.l),
+    close: Number(c.c),
+    volume: c.v == null ? null : Number(c.v)
+  }));
+
+  return values
+    .filter(c =>
+      [c.open, c.high, c.low, c.close].every(Number.isFinite)
+    )
+    .slice(-Number(outputsize));
 }
 
 export default async function handler(req, res) {
@@ -172,7 +187,7 @@ export default async function handler(req, res) {
   }
 
   const {
-    symbol = process.env.MARKET_SYMBOL || 'USA100',
+    symbol = 'USA100',
     interval = '5min',
     outputsize = '200'
   } = req.query || {};
@@ -216,45 +231,43 @@ export default async function handler(req, res) {
       values: demoCandles(
         interval,
         Math.min(size, 200)
-      ),
-      note:
-        'Demo mode. Set MARKET_PROVIDER and the relevant server-side provider settings for live data.'
+      )
     });
   }
 
-  try {
-    const values =
-      provider === 'twelve-data'
-        ? await getTwelveData(
-            pSymbol,
-            interval,
-            size
-          )
-        : await getGenericOHLC(
-            pSymbol,
-            interval,
-            size
-          );
+  if (provider === 'tickerlayer') {
+    try {
+      const values = await getTickerLayer(
+        pSymbol,
+        interval,
+        size
+      );
 
-    return send(res, 200, {
-      ok: true,
-      demo: false,
-      source: provider,
-      provider,
-      symbol,
-      providerSymbol: pSymbol,
-      interval,
-      values
-    });
-  } catch (error) {
-    return send(res, 502, {
-      ok: false,
-      error:
-        'Unable to retrieve market data',
-      provider,
-      symbol,
-      providerSymbol: pSymbol,
-      details: error.message
-    });
+      return send(res, 200, {
+        ok: true,
+        demo: false,
+        source: 'tickerlayer',
+        provider: 'tickerlayer',
+        symbol,
+        providerSymbol: pSymbol,
+        interval,
+        values
+      });
+    } catch (error) {
+      return send(res, 502, {
+        ok: false,
+        error: 'Unable to retrieve TickerLayer data',
+        provider: 'tickerlayer',
+        symbol,
+        providerSymbol: pSymbol,
+        details: error.message
+      });
+    }
   }
+
+  return send(res, 501, {
+    ok: false,
+    error: 'Provider not implemented in this version',
+    provider
+  });
 }
