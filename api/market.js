@@ -11,8 +11,62 @@ const ALLOWED_INTERVALS = new Set([
   '1week'
 ]);
 
+const PROVIDERS = new Set([
+  'demo',
+  'twelve-data',
+  'tickerlayer',
+  'generic-ohlc'
+]);
+
 function send(res, status, body) {
   res.status(status).json(body);
+}
+
+function demoCandles(interval, count = 80) {
+  const stepMs = ({
+    '1min': 1,
+    '5min': 5,
+    '15min': 15,
+    '30min': 30,
+    '1h': 60,
+    '2h': 120,
+    '4h': 240,
+    '8h': 480,
+    '1day': 1440,
+    '1week': 10080
+  }[interval] || 5) * 60 * 1000;
+
+  let price = 600;
+  const out = [];
+  const now = Date.now();
+
+  for (let i = count - 1; i >= 0; i--) {
+    const t = new Date(now - i * stepMs);
+
+    const drift =
+      Math.sin(i / 8) * 0.9 +
+      (Math.random() - 0.48) * 2.2;
+
+    const open = price;
+    const close = Math.max(1, open + drift);
+    const high = Math.max(open, close) + Math.random() * 1.8;
+    const low = Math.min(open, close) - Math.random() * 1.8;
+
+    out.push({
+      datetime: t.toISOString(),
+      open: +open.toFixed(4),
+      high: +high.toFixed(4),
+      low: +low.toFixed(4),
+      close: +close.toFixed(4),
+      volume: Math.round(
+        1000000 + Math.random() * 2500000
+      )
+    });
+
+    price = close;
+  }
+
+  return out;
 }
 
 function providerSymbol(symbol) {
@@ -29,47 +83,98 @@ function providerSymbol(symbol) {
   return key || 'US100';
 }
 
-async function tickerLayerRequest(path) {
+function intervalParts(interval) {
+  const map = {
+    '1min': [1, 'minute'],
+    '5min': [5, 'minute'],
+    '15min': [15, 'minute'],
+    '1h': [1, 'hour'],
+    '4h': [4, 'hour'],
+    '1day': [1, 'day']
+  };
+
+  return map[interval] || null;
+}
+
+function dateString(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+async function getTickerLayer(symbol, interval, outputsize) {
   const apiKey = String(
     process.env.MARKET_DATA_API_KEY || ''
   ).trim();
 
   if (!apiKey) {
-    return {
-      ok: false,
-      status: 500,
-      error: 'MARKET_DATA_API_KEY is not configured'
-    };
+    throw new Error(
+      'MARKET_DATA_API_KEY is not configured'
+    );
   }
 
-  const upstream = await fetch(
-    `https://api.tickerlayer.com${path}`,
-    {
-      method: 'GET',
-      headers: {
-        'x-api-key': apiKey,
-        'Accept': 'application/json'
-      }
-    }
+  const parts = intervalParts(interval);
+
+  if (!parts) {
+    throw new Error(
+      `TickerLayer does not directly support ${interval}`
+    );
+  }
+
+  const [multiplier, timespan] = parts;
+
+  const daysBack = ({
+    '1min': 3,
+    '5min': 10,
+    '15min': 30,
+    '1h': 90,
+    '4h': 365,
+    '1day': 3650
+  }[interval] || 10);
+
+  const to = new Date();
+
+  const from = new Date(
+    Date.now() -
+    daysBack * 24 * 60 * 60 * 1000
   );
 
-  const text = await upstream.text();
+  const url =
+    `https://api.tickerlayer.com/indices/agg/` +
+    `${symbol}/${multiplier}/${timespan}/` +
+    `${dateString(from)}/${dateString(to)}` +
+    `?sort=asc&limit=5000`;
 
-  let data;
+  const upstream = await fetch(url, {
+    headers: {
+      'x-api-key': apiKey,
+      'Accept': 'application/json'
+    }
+  });
 
-  try {
-    data = JSON.parse(text);
-  } catch {
-    data = {
-      rawResponse: text
-    };
+  const data = await upstream.json();
+
+  if (!upstream.ok) {
+    throw new Error(
+      data.message ||
+      `TickerLayer request failed (${upstream.status})`
+    );
   }
 
-  return {
-    ok: upstream.ok,
-    status: upstream.status,
-    data
-  };
+  const values = (data.results || [])
+    .map(c => ({
+      datetime: new Date(c.t).toISOString(),
+      open: Number(c.o),
+      high: Number(c.h),
+      low: Number(c.l),
+      close: Number(c.c),
+      volume:
+        c.v == null ? null : Number(c.v)
+    }))
+    .filter(c =>
+      [c.open, c.high, c.low, c.close]
+        .every(Number.isFinite)
+    );
+
+  return values.slice(-Number(outputsize));
 }
 
 export default async function handler(req, res) {
@@ -84,12 +189,11 @@ export default async function handler(req, res) {
     });
   }
 
-  const symbol = providerSymbol(
-    req.query?.symbol || 'USA100'
-  );
-
-  const interval =
-    req.query?.interval || '5min';
+  const {
+    symbol = 'USA100',
+    interval = '5min',
+    outputsize = '200'
+  } = req.query || {};
 
   if (!ALLOWED_INTERVALS.has(interval)) {
     return send(res, 400, {
@@ -101,56 +205,76 @@ export default async function handler(req, res) {
     });
   }
 
-  /*
-   * DIAGNOSTIC MODE
-   *
-   * First ask TickerLayer which index symbols
-   * are enabled for this API key.
-   */
-  try {
-    const symbolsResult =
-      await tickerLayerRequest(
-        '/indices/symbols'
-      );
+  const provider = String(
+    process.env.MARKET_PROVIDER || 'demo'
+  ).toLowerCase();
 
-    if (!symbolsResult.ok) {
-      return send(res, 502, {
-        ok: false,
-        diagnostic: 'tickerlayer-symbols',
-        tickerLayerStatus:
-          symbolsResult.status,
-        tickerLayerResponse:
-          symbolsResult.data
-      });
-    }
-
-    const symbols =
-      symbolsResult.data?.symbols || [];
-
-    const us100 = symbols.find(
-      item =>
-        String(item.symbol)
-          .toUpperCase() === 'US100'
-    );
-
-    return send(res, 200, {
-      ok: true,
-      diagnostic: true,
-      message:
-        'TickerLayer authentication is working',
-      requestedSymbol: symbol,
-      providerSymbol: 'US100',
-      us100Enabled: !!us100,
-      us100Details: us100 || null,
-      symbolCount: symbols.length,
-      symbols
-    });
-
-  } catch (error) {
-    return send(res, 502, {
+  if (!PROVIDERS.has(provider)) {
+    return send(res, 500, {
       ok: false,
-      diagnostic: 'tickerlayer-symbols',
-      error: error.message
+      error: 'Unsupported MARKET_PROVIDER',
+      provider
     });
   }
+
+  const size = Math.min(
+    Math.max(Number(outputsize) || 80, 1),
+    5000
+  );
+
+  const pSymbol = providerSymbol(symbol);
+
+  if (provider === 'demo') {
+    return send(res, 200, {
+      ok: true,
+      demo: true,
+      source: 'demo',
+      provider: 'demo',
+      symbol,
+      providerSymbol: pSymbol,
+      interval,
+      values: demoCandles(
+        interval,
+        Math.min(size, 200)
+      )
+    });
+  }
+
+  if (provider === 'tickerlayer') {
+    try {
+      const values = await getTickerLayer(
+        pSymbol,
+        interval,
+        size
+      );
+
+      return send(res, 200, {
+        ok: true,
+        demo: false,
+        source: 'tickerlayer',
+        provider: 'tickerlayer',
+        symbol,
+        providerSymbol: pSymbol,
+        interval,
+        values
+      });
+    } catch (error) {
+      return send(res, 502, {
+        ok: false,
+        error:
+          'Unable to retrieve TickerLayer data',
+        provider: 'tickerlayer',
+        symbol,
+        providerSymbol: pSymbol,
+        details: error.message
+      });
+    }
+  }
+
+  return send(res, 501, {
+    ok: false,
+    error:
+      'Provider not implemented in this version',
+    provider
+  });
 }
