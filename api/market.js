@@ -42,6 +42,7 @@ function demoCandles(interval, count = 80) {
 
   for (let i = count - 1; i >= 0; i--) {
     const t = new Date(now - i * stepMs);
+
     const drift =
       Math.sin(i / 8) * 0.9 +
       (Math.random() - 0.48) * 2.2;
@@ -57,7 +58,9 @@ function demoCandles(interval, count = 80) {
       high: +high.toFixed(4),
       low: +low.toFixed(4),
       close: +close.toFixed(4),
-      volume: Math.round(1000000 + Math.random() * 2500000)
+      volume: Math.round(
+        1000000 + Math.random() * 2500000
+      )
     });
 
     price = close;
@@ -74,18 +77,25 @@ function normalizeCandles(values = []) {
       high: Number(c.high),
       low: Number(c.low),
       close: Number(c.close),
-      volume: c.volume == null ? null : Number(c.volume)
+      volume:
+        c.volume == null ? null : Number(c.volume)
     }))
     .filter(c =>
       c.datetime &&
-      [c.open, c.high, c.low, c.close].every(Number.isFinite)
+      [c.open, c.high, c.low, c.close]
+        .every(Number.isFinite)
     );
 }
 
 function providerSymbol(symbol) {
-  const key = String(symbol || '').trim().toUpperCase();
+  const key = String(symbol || '')
+    .trim()
+    .toUpperCase();
 
-  if (['USA100', 'US100', 'US TECH 100'].includes(key)) {
+  if (
+    ['USA100', 'US100', 'US TECH 100']
+      .includes(key)
+  ) {
     return 'US100';
   }
 
@@ -109,11 +119,20 @@ function dateString(date) {
   return date.toISOString().slice(0, 10);
 }
 
-async function getTickerLayer(symbol, interval, outputsize) {
-  const apiKey = process.env.MARKET_DATA_API_KEY;
+async function getTickerLayer(
+  symbol,
+  interval,
+  outputsize
+) {
+  // Trim whitespace/newlines from the Vercel environment variable
+  const apiKey = String(
+    process.env.MARKET_DATA_API_KEY || ''
+  ).trim();
 
   if (!apiKey) {
-    throw new Error('MARKET_DATA_API_KEY is not configured');
+    throw new Error(
+      'MARKET_DATA_API_KEY is not configured'
+    );
   }
 
   const parts = intervalParts(interval);
@@ -136,12 +155,16 @@ async function getTickerLayer(symbol, interval, outputsize) {
   }[interval] || 10);
 
   const to = new Date();
+
   const from = new Date(
-    Date.now() - daysBack * 24 * 60 * 60 * 1000
+    Date.now() -
+    daysBack * 24 * 60 * 60 * 1000
   );
 
   const url =
-    `https://api.tickerlayer.com/indices/agg/${symbol}/${multiplier}/${timespan}/${dateString(from)}/${dateString(to)}` +
+    `https://api.tickerlayer.com/indices/agg/` +
+    `${symbol}/${multiplier}/${timespan}/` +
+    `${dateString(from)}/${dateString(to)}` +
     `?sort=asc&limit=5000`;
 
   const upstream = await fetch(url, {
@@ -159,18 +182,21 @@ async function getTickerLayer(symbol, interval, outputsize) {
     );
   }
 
-  const values = (data.results || []).map(c => ({
-    datetime: new Date(c.t).toISOString(),
-    open: Number(c.o),
-    high: Number(c.h),
-    low: Number(c.l),
-    close: Number(c.c),
-    volume: c.v == null ? null : Number(c.v)
-  }));
+  const values = (data.results || [])
+    .map(c => ({
+      datetime: new Date(c.t).toISOString(),
+      open: Number(c.o),
+      high: Number(c.h),
+      low: Number(c.l),
+      close: Number(c.c),
+      volume:
+        c.v == null ? null : Number(c.v)
+    }));
 
   return values
     .filter(c =>
-      [c.open, c.high, c.low, c.close].every(Number.isFinite)
+      [c.open, c.high, c.low, c.close]
+        .every(Number.isFinite)
     )
     .slice(-Number(outputsize));
 }
@@ -195,14 +221,15 @@ export default async function handler(req, res) {
   if (!ALLOWED_INTERVALS.has(interval)) {
     return send(res, 400, {
       error: 'Unsupported interval',
-      allowedIntervals: [...ALLOWED_INTERVALS]
+      allowedIntervals: [
+        ...ALLOWED_INTERVALS
+      ]
     });
   }
 
-  const provider =
-    String(
-      process.env.MARKET_PROVIDER || 'demo'
-    ).toLowerCase();
+  const provider = String(
+    process.env.MARKET_PROVIDER || 'demo'
+  ).toLowerCase();
 
   if (!PROVIDERS.has(provider)) {
     return send(res, 500, {
@@ -256,7 +283,8 @@ export default async function handler(req, res) {
     } catch (error) {
       return send(res, 502, {
         ok: false,
-        error: 'Unable to retrieve TickerLayer data',
+        error:
+          'Unable to retrieve TickerLayer data',
         provider: 'tickerlayer',
         symbol,
         providerSymbol: pSymbol,
@@ -267,7 +295,8 @@ export default async function handler(req, res) {
 
   return send(res, 501, {
     ok: false,
-    error: 'Provider not implemented in this version',
+    error:
+      'Provider not implemented in this version',
     provider
   });
 }
