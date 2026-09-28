@@ -23,7 +23,7 @@ export default async function handler(req, res) {
 
   try {
     const url =
-      'https://api.tickerlayer.com/indices/US100/quote';
+      'https://api.tickerlayer.com/indices/quote/US100';
 
     const upstream = await fetch(url, {
       method: 'GET',
@@ -48,7 +48,7 @@ export default async function handler(req, res) {
     return send(res, 200, {
       ok: upstream.ok,
       tickerLayerStatus: upstream.status,
-      endpoint: '/indices/US100/quote',
+      endpoint: '/indices/quote/US100',
       response: data
     });
 
