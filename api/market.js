@@ -23,7 +23,7 @@ export default async function handler(req, res) {
 
   try {
     const url =
-      'https://api.tickerlayer.com/indices/agg/US100/prev?interval=5m';
+      'https://api.tickerlayer.com/indices/US100/quote';
 
     const upstream = await fetch(url, {
       method: 'GET',
@@ -48,8 +48,7 @@ export default async function handler(req, res) {
     return send(res, 200, {
       ok: upstream.ok,
       tickerLayerStatus: upstream.status,
-      endpoint: '/indices/agg/US100/prev',
-      interval: '5m',
+      endpoint: '/indices/US100/quote',
       response: data
     });
 
