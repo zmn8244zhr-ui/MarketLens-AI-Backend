@@ -3,6 +3,11 @@ function send(res, status, body) {
 }
 
 const MODEL = process.env.CHART_VISION_MODEL || "gpt-5.6-luna";
+function setCors(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
 
 const SYSTEM_PROMPT = `
 You are MarketLens AI, an ICT/SMC trading-chart analysis engine.
